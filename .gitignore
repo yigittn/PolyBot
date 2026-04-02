@@ -1,0 +1,19 @@
+# GİZLİ DOSYALAR — ASLA COMMIT ETME
+.env
+
+# Bot verisi
+data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Log dosyaları
+*.log
+
+# macOS
+.DS_Store

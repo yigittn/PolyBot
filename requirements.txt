@@ -1,0 +1,11 @@
+# ============================================================
+# POLYMARKET BOT - BAĞIMLILIKLAR
+# Kurulum: pip install -r requirements.txt
+# ============================================================
+
+py-clob-client>=0.34.5        # Polymarket CLOB API istemcisi
+websockets>=12.0              # Binance & Coinbase canlı fiyat akışı
+python-dotenv>=1.0.0          # .env dosyasını okumak için
+requests>=2.31.0              # Sync HTTP istekleri
+web3>=6.0.0                   # Polygon üzerinden Chainlink oracle
+aiohttp>=3.9.0                # Async HTTP istekleri
