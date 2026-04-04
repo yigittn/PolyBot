@@ -208,6 +208,120 @@ class RiskManager:
 
         return position
 
+    # ── Kelly Criterion Pozisyon Boyutu ─────────────────────────────────
+
+    def estimate_win_probability(self, token_price: Decimal) -> Decimal:
+        """
+        Token fiyatına göre gerçekçi kazanma olasılığı tahmini.
+
+        Tarihsel verilere dayalı kalibrasyon:
+          $0.25-0.40 → p=0.48 (ucuz ama belirsiz)
+          $0.40-0.55 → p=0.56 (en iyi bracket, 5/9 tarihsel)
+          $0.55+     → p=0.50 (edge yok)
+
+        Ardışık kazanç serisinde hafif bonus (momentum).
+        """
+        tp = float(token_price)
+        if tp <= 0.40:
+            p = Decimal("0.48")
+        elif tp <= 0.55:
+            p = Decimal("0.56")
+        else:
+            p = Decimal("0.50")
+
+        if self._consecutive_wins >= 2:
+            p += Decimal("0.02")
+
+        return min(p, Decimal("0.70"))
+
+    def calculate_kelly_size(
+        self,
+        balance_usdc: Decimal,
+        token_price: Decimal,
+        confidence: int,
+        book_size: Decimal = None,
+    ) -> tuple[Decimal, dict]:
+        """
+        Binary Kelly ile pozisyon boyutu.
+
+        f* = KELLY_FRACTION * (p - X) / (1 - X)
+
+        Dönüş: (position_usdc, kelly_info)
+          kelly_info = {p, f_star, f_adj, kelly_bet, reason}
+          position_usdc = 0 → Kelly says skip (no edge)
+        """
+        info = {
+            "p": Decimal("0"),
+            "f_star": Decimal("0"),
+            "f_adj": Decimal("0"),
+            "kelly_bet": Decimal("0"),
+            "reason": "",
+        }
+
+        if token_price <= 0 or token_price >= 1:
+            info["reason"] = "Token fiyat gecersiz"
+            return Decimal("0"), info
+
+        p = self.estimate_win_probability(token_price)
+        info["p"] = p
+
+        # Binary Kelly: f* = (p - X) / (1 - X)
+        f_star = (p - token_price) / (Decimal("1") - token_price)
+        info["f_star"] = f_star
+
+        if f_star <= Decimal("0.005"):
+            info["reason"] = (
+                f"Kelly edge yok: p={p}, X=${token_price}, f*={f_star:.4f}"
+            )
+            return Decimal("0"), info
+
+        # Fractional Kelly (quarter Kelly default)
+        f_adj = f_star * self._cfg.KELLY_FRACTION
+        max_pct = self._cfg.KELLY_MAX_BET_PCT
+        if f_adj > max_pct:
+            f_adj = max_pct
+        info["f_adj"] = f_adj
+
+        kelly_bet = (balance_usdc * f_adj).quantize(
+            Decimal("0.01"), rounding=ROUND_DOWN
+        )
+        info["kelly_bet"] = kelly_bet
+
+        # Likidite kontrolü
+        if book_size is not None and token_price > 0:
+            available_usdc = book_size * token_price
+            max_from_book = (available_usdc * Decimal("0.8")).quantize(Decimal("0.01"))
+            if kelly_bet > max_from_book:
+                kelly_bet = max_from_book
+
+        # Minimum emir: 5 share × limit fiyatı
+        limit_px = min(
+            (token_price * Decimal("1.40")).quantize(
+                Decimal("0.01"), rounding=ROUND_DOWN
+            ),
+            self._cfg.MAX_TOKEN_PRICE,
+        )
+        min_cost = Decimal("5") * limit_px
+
+        if kelly_bet < min_cost:
+            if balance_usdc >= min_cost and f_star > Decimal("0.02"):
+                kelly_bet = min_cost
+                info["reason"] = "Kelly < min, minimum emir kullanildi"
+            else:
+                info["reason"] = (
+                    f"Kelly bet ${kelly_bet} < min ${min_cost}, "
+                    f"edge yetersiz (f*={f_star:.3f})"
+                )
+                return Decimal("0"), info
+
+        if kelly_bet > balance_usdc:
+            kelly_bet = balance_usdc
+
+        if not info["reason"]:
+            info["reason"] = "OK"
+
+        return kelly_bet, info
+
     # ── İşlem Sonucu Kaydetme ────────────────────────────────────────────
 
     def record_trade(self, result: str, pnl: Decimal):

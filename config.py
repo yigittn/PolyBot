@@ -144,6 +144,17 @@ class Config:
         self.PROTECTION_TRADES: int = _get_int("PROTECTION_TRADES", 10)
         self.PROTECTION_DELAY: int = _get_int("PROTECTION_DELAY_SECONDS", 5)
 
+        # --- Kelly Criterion ---
+        self.USE_KELLY: bool = _get_bool("USE_KELLY", False)
+        self.KELLY_FRACTION: Decimal = _get_decimal("KELLY_FRACTION", "0.25")
+        self.KELLY_MAX_BET_PCT: Decimal = _get_decimal("KELLY_MAX_BET_PCT", "0.20")
+
+        # --- Multi-Asset ---
+        _assets_raw = _get("TRADING_ASSETS", "BTC")
+        self.TRADING_ASSETS: list[str] = [
+            a.strip().upper() for a in _assets_raw.split(",") if a.strip()
+        ]
+
         # --- Log & Dosya ---
         self.LOG_FILE: str = _get("LOG_FILE", "data/trades.jsonl")
         self.DRY_RUN: bool = _get_bool("DRY_RUN", True)
@@ -155,6 +166,7 @@ class Config:
         """Başlangıçta konsola ayar özetini yazdırır."""
         mode = "KURU CALISMA (DRY RUN)" if self.DRY_RUN else "GERCEK ISLEM MODU"
         wallet = f"{self.FUNDER_ADDRESS[:8]}...{self.FUNDER_ADDRESS[-4:]}"
+        assets_str = ",".join(self.TRADING_ASSETS)
         print(f"""
 +==================================================+
 |           POLYMARKET ORACLE ARB BOT              |
@@ -164,6 +176,7 @@ class Config:
 |  CLOB:             {self.CLOB_HOST:<28s} |
 |  RPC:              {str(self.POLYGON_RPC_URL)[:28]:<28s} |
 +--------------------------------------------------+
+|  Varliklar:        {assets_str:<28s} |
 |  Delta esigi:      %{str(self.DELTA_THRESHOLD):<27s} |
 |  Oracle lag min:   {self.ORACLE_LAG_MIN}sn{'':<25s} |
 |  Maks pozisyon:    ${str(self.MAX_POSITION):<27s} |

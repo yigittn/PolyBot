@@ -1,8 +1,8 @@
 """
-market_resolver.py — Aktif Piyasa Bulucu
-==========================================
-Polymarket'te şu anda açık olan "BTC Up or Down" 5 dakikalık piyasayı bulur,
-UP ve DOWN token ID'lerini ve güncel fiyatlarını döndürür.
+market_resolver.py — Aktif Piyasa Bulucu (Multi-Asset)
+=======================================================
+Polymarket'te şu anda açık olan 5 dakikalık Up/Down piyasasını bulur.
+BTC ve ETH destekler.
 
 Kullandığı API'ler:
   - Gamma API: Piyasa keşfi (slug, condition_id, outcomes)
@@ -13,7 +13,8 @@ Kullanım:
     resolver = MarketResolver(cfg)
     await resolver.initialize()
     window = resolver.get_current_window()
-    market = await resolver.get_active_market()
+    market = await resolver.get_active_market("BTC")
+    market = await resolver.get_active_market("ETH")
 """
 
 import asyncio
@@ -29,10 +30,15 @@ from py_clob_client.client import ClobClient
 from config import cfg
 
 
-class MarketResolver:
-    """Aktif 5-dk BTC Up/Down piyasasını bulur ve token bilgilerini sağlar."""
+_ASSET_KEYWORDS = {
+    "BTC": {"slugs": ["btc-updown-5m"], "names": ["btc", "bitcoin"]},
+    "ETH": {"slugs": ["eth-updown-5m"], "names": ["eth", "ethereum"]},
+}
 
-    # Gamma API — piyasa keşfi için
+
+class MarketResolver:
+    """Aktif 5-dk Up/Down piyasasını bulur ve token bilgilerini sağlar (multi-asset)."""
+
     GAMMA_API = "https://gamma-api.polymarket.com"
 
     def __init__(self, config=None):
@@ -97,31 +103,15 @@ class MarketResolver:
 
     # ── Aktif Piyasa Bulma ───────────────────────────────────────────────
 
-    async def get_active_market(self) -> Optional[dict]:
+    async def get_active_market(self, asset: str = "BTC") -> Optional[dict]:
         """
-        Gamma API'den aktif BTC 5-dk piyasasını ara,
-        token ID'lerini ve güncel fiyatları döndür.
-
-        Bulunamazsa None döner (henüz açılmamış veya kapanmış olabilir).
-
-        Dönüş:
-            {
-              "condition_id": "0x...",
-              "token_id_up": "71321...",
-              "token_id_down": "52050...",
-              "up_price": Decimal("0.72"),
-              "down_price": Decimal("0.28"),
-              "up_best_ask": Decimal("0.73"),
-              "down_best_ask": Decimal("0.29"),
-              "liquidity": Decimal("5200.00"),
-              "slug": "btc-5min-up-down-1743173700"
-            }
+        Gamma API'den aktif 5-dk piyasasını ara (asset: "BTC" veya "ETH").
+        Bulunamazsa None döner.
         """
         if not self._session:
             await self.initialize()
 
-        # Gamma API'den aktif BTC 5-dk piyasalarını ara
-        market_data = await self._search_gamma_market()
+        market_data = await self._search_gamma_market(asset)
         if not market_data:
             return None
 
@@ -135,19 +125,20 @@ class MarketResolver:
 
         return result
 
-    async def _search_gamma_market(self) -> Optional[dict]:
+    async def _search_gamma_market(self, asset: str = "BTC") -> Optional[dict]:
         """
-        Gamma API'den aktif BTC up/down 5-dk piyasasını ara.
+        Gamma API'den aktif up/down 5-dk piyasasını ara.
         Strateji:
           1) Mevcut pencerenin slug'ını doğrudan dene (en hızlı)
           2) Bulunamazsa geniş arama yap ve filtrele
         """
+        kw = _ASSET_KEYWORDS.get(asset, _ASSET_KEYWORDS["BTC"])
         try:
             window = self.get_current_window()
             window_ts = window["window_ts"]
 
             # Strateji 1: Doğrudan slug ile ara
-            expected_slug = f"btc-updown-5m-{window_ts}"
+            expected_slug = f"{kw['slugs'][0]}-{window_ts}"
             market = await self._fetch_by_slug(expected_slug)
             if market:
                 return market
@@ -170,9 +161,9 @@ class MarketResolver:
                 slug = market.get("slug", "").lower()
                 question = market.get("question", "").lower()
                 combined = slug + " " + question
-                if "btc-updown-5m" in slug:
+                if kw["slugs"][0] in slug:
                     return market
-                if ("btc" in combined or "bitcoin" in combined) and ("5" in combined or "minute" in combined) and ("up" in combined or "down" in combined):
+                if any(n in combined for n in kw["names"]) and ("5" in combined or "minute" in combined) and ("up" in combined or "down" in combined):
                     return market
 
             return None

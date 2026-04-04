@@ -25,12 +25,14 @@ class OrderExecutor:
 
     MIN_SHARES = 5
 
+    LIMIT_MULTIPLIER = Decimal("1.40")
+
     def estimate_limit_price(self, fair_price: Decimal) -> Decimal:
         """GTC limit — risk_manager ile aynı: fair × 1.40, tavan MAX_TOKEN_PRICE."""
         cap = self._cfg.MAX_TOKEN_PRICE
         if not fair_price or fair_price <= 0:
             return cap
-        lp = (fair_price * Decimal("1.40")).quantize(
+        lp = (fair_price * self.LIMIT_MULTIPLIER).quantize(
             Decimal("0.01"), rounding=ROUND_DOWN
         )
         return min(lp, cap)

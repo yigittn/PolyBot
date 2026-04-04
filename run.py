@@ -53,6 +53,7 @@ class Bot:
         self.claimer = AutoClaimer(cfg)
 
         self._traded_this_window: int = 0
+        self._order_attempted_this_window: set[str] = set()
         self._try_trade_lock = asyncio.Lock()
         self._running = True
 
@@ -91,12 +92,13 @@ class Bot:
 
     async def _start_modules(self):
         """Tüm modülleri başlat (ortak başlatma)."""
-        print("  Moduller baslatiliyor...")
+        assets_str = ",".join(cfg.TRADING_ASSETS)
+        print(f"  Moduller baslatiliyor... (varliklar: {assets_str})")
 
-        print("  [1/4] Exchange feed (Binance + Coinbase + Bitstamp)...")
+        print(f"  [1/4] Exchange feed ({assets_str} — Binance + Coinbase + Bitstamp)...")
         await self.exchange.start()
 
-        print("  [2/4] Chainlink oracle monitor...")
+        print(f"  [2/4] Chainlink oracle monitor ({assets_str})...")
         await self.oracle.start()
 
         print("  [3/4] Polymarket CLOB client...")
@@ -143,29 +145,33 @@ class Bot:
             return False
         print(f"        GECTI — ${self._initial_balance} USDC")
 
-        # 4. Binance WebSocket
+        # 4. Binance WebSocket (tüm asset'ler)
         print("  [3/8] Binance WebSocket...")
         await asyncio.sleep(3)
-        ex = self.exchange.get_price()
-        if ex.get("binance") is None:
-            print("        BASARISIZ — Binance fiyat verisi gelmiyor!")
-            return False
-        print(f"        GECTI — BTC ${ex['binance']:.2f}")
+        for asset in cfg.TRADING_ASSETS:
+            ex = self.exchange.get_price(asset)
+            if ex.get("binance") is None:
+                print(f"        BASARISIZ — {asset} Binance fiyat verisi gelmiyor!")
+                return False
+            print(f"        GECTI — {asset} ${ex['binance']:.2f}")
 
-        # 5. Coinbase WebSocket
+        # 5. Coinbase WebSocket (tüm asset'ler)
         print("  [4/8] Coinbase WebSocket...")
-        if ex.get("coinbase") is None:
-            print(f"        UYARI — Coinbase verisi yok, sadece Binance ile devam")
-        else:
-            print(f"        GECTI — BTC ${ex['coinbase']:.2f}")
+        for asset in cfg.TRADING_ASSETS:
+            ex = self.exchange.get_price(asset)
+            if ex.get("coinbase") is None:
+                print(f"        UYARI — {asset} Coinbase verisi yok, sadece Binance ile devam")
+            else:
+                print(f"        GECTI — {asset} ${ex['coinbase']:.2f}")
 
-        # 6. Oracle
+        # 6. Oracle (tüm asset'ler)
         print("  [5/8] Chainlink oracle...")
-        orc = self.oracle.get_oracle_data()
-        if orc.get("price") is None:
-            print("        BASARISIZ — Oracle fiyat verisi yok!")
-            return False
-        print(f"        GECTI — BTC ${orc['price']:.2f} (lag {orc['lag_seconds']}s)")
+        for asset in cfg.TRADING_ASSETS:
+            orc = self.oracle.get_oracle_data(asset)
+            if orc.get("price") is None:
+                print(f"        BASARISIZ — {asset} Oracle fiyat verisi yok!")
+                return False
+            print(f"        GECTI — {asset} ${orc['price']:.2f} (lag {orc['lag_seconds']}s)")
 
         # 7. CLOB API
         print("  [6/8] Polymarket CLOB API...")
@@ -180,23 +186,26 @@ class Bot:
             print(f"        BASARISIZ — {e}")
             return False
 
-        # 8. Aktif piyasa
+        # 8. Aktif piyasa (tüm asset'ler)
         print("  [7/8] Aktif 5-dk piyasa kontrolu...")
-        market = await self.resolver.get_active_market()
-        if market:
-            print(f"        GECTI — {market.get('slug', '?')}")
-        else:
-            print("        UYARI — Su an aktif piyasa yok (market saatleri disinda olabilir)")
+        for asset in cfg.TRADING_ASSETS:
+            market = await self.resolver.get_active_market(asset)
+            if market:
+                print(f"        GECTI — [{asset}] {market.get('slug', '?')}")
+            else:
+                print(f"        UYARI — [{asset}] Su an aktif piyasa yok")
 
         # 9. Tüm kontroller geçti
         print(f"  [8/8] Son kontroller...")
         print(f"        GECTI — Tum sistemler hazir\n")
 
         wallet = f"{cfg.FUNDER_ADDRESS[:8]}...{cfg.FUNDER_ADDRESS[-4:]}"
+        assets_str = ",".join(cfg.TRADING_ASSETS)
         banner = f"""
   +================================================+
   |  POLYMARKET BOT — PRODUCTION MODE               |
   +================================================+
+  |  Varliklar:     {assets_str:<30s} |
   |  Cuzdan:        {wallet:<30s} |
   |  Bakiye:        ${str(self._initial_balance):<29s} |
   |  Pozisyon:      ${str(cfg.MAX_POSITION):<28s} / islem |
@@ -258,13 +267,18 @@ class Bot:
             )
             return True
 
-        # 5. Exchange feed 60+ saniye stale
-        ex = self.exchange.get_price()
-        if ex.get("is_stale") and ex.get("average") is None:
+        # 5. Exchange feed 60+ saniye stale (herhangi bir asset yeterli)
+        any_exchange_ok = False
+        for asset in cfg.TRADING_ASSETS:
+            ex = self.exchange.get_price(asset)
+            if not (ex.get("is_stale") and ex.get("average") is None):
+                any_exchange_ok = True
+                break
+        if not any_exchange_ok:
             now = time.time()
             latest = max(
-                getattr(self.exchange, "_binance_updated", 0),
-                getattr(self.exchange, "_coinbase_updated", 0),
+                max(self.exchange._binance_updated.values(), default=0),
+                max(self.exchange._coinbase_updated.values(), default=0),
             )
             if latest > 0 and (now - latest) > 60:
                 self._stop_reason = (
@@ -272,9 +286,15 @@ class Bot:
                 )
                 return True
 
-        # 6. Oracle 120+ saniye stale
-        orc = self.oracle.get_oracle_data()
-        if orc["lag_seconds"] > 120 and orc.get("price") is not None:
+        # 6. Oracle 120+ saniye stale (tüm asset'ler stale ise durdur)
+        all_oracle_stale = True
+        for asset in cfg.TRADING_ASSETS:
+            orc = self.oracle.get_oracle_data(asset)
+            if not (orc["lag_seconds"] > 120 and orc.get("price") is not None):
+                all_oracle_stale = False
+                break
+        if all_oracle_stale:
+            orc = self.oracle.get_oracle_data(cfg.TRADING_ASSETS[0])
             self._stop_reason = (
                 f"Oracle {orc['lag_seconds']}s dir guncellenmiyor"
             )
@@ -356,9 +376,11 @@ class Bot:
                     last_window_ts = window_ts
                     self._traded_this_window = 0
                     self._committed_trade_window = 0
+                    self._order_attempted_this_window.clear()
                     self._window_count += 1
 
-                    self.oracle.cache_window_open_price(window_ts)
+                    for asset in cfg.TRADING_ASSETS:
+                        self.oracle.cache_window_open_price(window_ts, asset)
 
                     # Günlük reset kontrolü
                     self.risk._check_daily_reset()
@@ -374,18 +396,22 @@ class Bot:
 
                 # ── Pencere sonuna uzak: izle ───────────────────────────
                 if remaining > cfg.ENTRY_WINDOW_START:
-                    ex = self.exchange.get_price()
-                    orc = self.oracle.get_oracle_data()
-                    if ex.get("average") and orc.get("price"):
-                        delta = "?"
-                        wop = self.oracle.get_window_open_price(window_ts)
-                        if wop and wop > 0:
-                            delta = ((ex["average"] - wop) / wop * Decimal("100")).quantize(Decimal("0.001"))
+                    parts = []
+                    for asset in cfg.TRADING_ASSETS:
+                        ex = self.exchange.get_price(asset)
+                        orc = self.oracle.get_oracle_data(asset)
+                        if ex.get("average") and orc.get("price"):
+                            delta = "?"
+                            wop = self.oracle.get_window_open_price(window_ts, asset)
+                            if wop and wop > 0:
+                                delta = ((ex["average"] - wop) / wop * Decimal("100")).quantize(Decimal("0.001"))
+                            parts.append(
+                                f"{asset} ${ex['average']:.2f} "
+                                f"(orc {orc['lag_seconds']}s D:{delta}%)"
+                            )
+                    if parts:
                         print(
-                            f"  [{remaining:>3d}s] "
-                            f"BTC ${ex['average']:.2f} | "
-                            f"Oracle ${orc['price']:.2f} (lag {orc['lag_seconds']}s) | "
-                            f"D: {delta}%",
+                            f"  [{remaining:>3d}s] " + " | ".join(parts),
                             end="\r",
                             flush=True,
                         )
@@ -440,215 +466,309 @@ class Bot:
     # ══════════════════════════════════════════════════════════════════
 
     async def _try_trade(self, window_ts: int, remaining: int):
-        """Sinyal üret ve uygunsa emir gönder (pencere basina tek yol — asyncio.Lock)."""
+        """
+        Tüm TRADING_ASSETS üzerinde sinyal üret, ilk uygun asset'te emir gönder.
+        Pencere başına en fazla bir başarılı işlem (_traded_this_window).
+        Aynı asset için pencere başına en fazla bir emir denemesi
+        (_order_attempted_this_window); BTC emri dolmazsa ETH aynı pencerede denenebilir.
+        """
         async with self._try_trade_lock:
             if self._traded_this_window == window_ts:
                 return
 
-            exchange_data = self.exchange.get_price()
-            oracle_data = self.oracle.get_oracle_data()
-            window_open_price = self.oracle.get_window_open_price(window_ts)
-
-            market = await self.resolver.get_active_market()
-            if not market:
-                log_skip("Aktif piyasa bulunamadi", window_ts)
-                return
-
-            if not self.resolver.is_tradeable(market):
-                log_skip("Piyasa islem yapilabilir degil (fiyat/likidite)", window_ts)
-                return
-
-            up_ask = market.get("up_best_ask")
-            down_ask = market.get("down_best_ask")
-            sig = self.signal.generate_signal(
-                exchange_data,
-                oracle_data,
-                window_open_price,
-                up_best_ask=up_ask,
-                down_best_ask=down_ask,
-            )
-
-            if sig["direction"] == "SKIP":
-                log_skip(sig["reason"], window_ts)
-                return
-
-            if sig["direction"] == "UP":
-                token_id = market["token_id_up"]
-                token_price = market["up_best_ask"]
-                book_size = market.get("up_liquidity", Decimal("999"))
-            else:
-                token_id = market["token_id_down"]
-                token_price = market["down_best_ask"]
-                book_size = market.get("down_liquidity", Decimal("999"))
-
-            if token_price is not None and token_price > cfg.MAX_TOKEN_PRICE:
-                log_skip(
-                    f"Token fiyati ${token_price} > max ${cfg.MAX_TOKEN_PRICE} "
-                    f"(run.py guvenlik)",
-                    window_ts,
+            for asset in cfg.TRADING_ASSETS:
+                if self._traded_this_window == window_ts:
+                    return
+                traded = await self._try_trade_for_asset(
+                    asset, window_ts, remaining
                 )
-                return
+                if traded:
+                    return
 
-            # ── Confidence-Price Gate ────────────────────────────────────
-            # Pahalı tokenlerde yüksek confidence iste (80¢ → %80 win rate lazım)
+    async def _try_trade_for_asset(
+        self, asset: str, window_ts: int, remaining: int
+    ) -> bool:
+        """Tek bir asset için sinyal üret ve uygunsa emir gönder. True ise trade yapıldı."""
+        if asset in self._order_attempted_this_window:
+            return False
+
+        exchange_data = self.exchange.get_price(asset)
+        oracle_data = self.oracle.get_oracle_data(asset)
+        window_open_price = self.oracle.get_window_open_price(window_ts, asset)
+
+        market = await self.resolver.get_active_market(asset)
+        if not market:
+            log_skip(f"[{asset}] Aktif piyasa bulunamadi", window_ts)
+            return False
+
+        if not self.resolver.is_tradeable(market):
+            log_skip(f"[{asset}] Piyasa islem yapilabilir degil (fiyat/likidite)", window_ts)
+            return False
+
+        up_ask = market.get("up_best_ask")
+        down_ask = market.get("down_best_ask")
+        sig = self.signal.generate_signal(
+            exchange_data,
+            oracle_data,
+            window_open_price,
+            up_best_ask=up_ask,
+            down_best_ask=down_ask,
+        )
+
+        if sig["direction"] == "SKIP":
+            log_skip(f"[{asset}] {sig['reason']}", window_ts)
+            return False
+
+        if sig["direction"] == "UP":
+            token_id = market["token_id_up"]
+            token_price = market["up_best_ask"]
+            book_size = market.get("up_liquidity", Decimal("999"))
+        else:
+            token_id = market["token_id_down"]
+            token_price = market["down_best_ask"]
+            book_size = market.get("down_liquidity", Decimal("999"))
+
+        if token_price is not None and token_price > cfg.MAX_TOKEN_PRICE:
+            log_skip(
+                f"[{asset}] Token fiyati ${token_price} > max ${cfg.MAX_TOKEN_PRICE} "
+                f"(run.py guvenlik)",
+                window_ts,
+            )
+            return False
+
+        # Confidence-price gate: Kelly modunda gereksiz (Kelly kendi filtreler),
+        # ama güvenlik için temel kontrol
+        if not cfg.USE_KELLY:
             required_confidence = int(token_price * 100)
             if sig["confidence"] < required_confidence:
                 log_skip(
-                    f"Confidence-price gate: conf {sig['confidence']} < "
+                    f"[{asset}] Confidence-price gate: conf {sig['confidence']} < "
                     f"gerekli {required_confidence} (token ${token_price})",
                     window_ts,
                 )
-                return
+                return False
 
-            balance = await self.executor.get_balance()
-            can_trade, reason = self.risk.can_trade(
+        balance = await self.executor.get_balance()
+        can_trade, reason = self.risk.can_trade(
+            balance_usdc=balance,
+            token_price=token_price,
+            book_size=book_size,
+        )
+
+        if not can_trade:
+            log_skip(f"[{asset}] Risk: {reason} (bakiye: ${balance})", window_ts)
+            if "Cooldown" in reason:
+                stats = self.risk.get_stats()
+                log_cooldown(stats["consecutive_losses"], 0)
+            return False
+
+        # ── Pozisyon boyutu: Kelly veya sabit ────────────────────────
+        kelly_info = None
+        if cfg.USE_KELLY:
+            position_size, kelly_info = self.risk.calculate_kelly_size(
                 balance_usdc=balance,
                 token_price=token_price,
+                confidence=sig["confidence"],
                 book_size=book_size,
             )
-
-            if not can_trade:
-                log_skip(f"Risk: {reason} (bakiye: ${balance})", window_ts)
-                if "Cooldown" in reason:
-                    stats = self.risk.get_stats()
-                    log_cooldown(stats["consecutive_losses"], 0)
-                return
-
+            if position_size <= 0:
+                log_skip(
+                    f"[{asset}] Kelly SKIP: {kelly_info['reason']}",
+                    window_ts,
+                )
+                return False
+        else:
             position_size = self.risk.calculate_position_size(
                 confidence=sig["confidence"],
                 token_price=token_price,
                 book_size=book_size,
             )
 
-            # ── Enhanced production logging: İŞLEM ÖNCESİ ────────────────
+        if not cfg.DRY_RUN:
+            shares_est = (position_size / token_price).quantize(
+                Decimal("0.01")
+            ) if token_price > 0 else Decimal("0")
+            t = _now_str()
+            print(f"\n  [{t}] {'=' * 42}")
+            print(f"  [{t}] [{asset}] GERCEK ISLEM #{self._production_trade_count + 1}")
+            print(f"  [{t}] [{asset}] Yon: {sig['direction']} | Confidence: {sig['confidence']}")
+            print(f"  [{t}] [{asset}] Delta: {'+' if sig['delta_percent'] > 0 else ''}{sig['delta_percent']:.4f}% | Oracle Lag: {sig['oracle_lag']}s")
+            if kelly_info:
+                print(
+                    f"  [{t}] [{asset}] Kelly: p={kelly_info['p']}, "
+                    f"f*={kelly_info['f_star']:.3f}, "
+                    f"f_adj={kelly_info['f_adj']:.3f}"
+                )
+            print(f"  [{t}] [{asset}] Token fiyat: ${token_price} | Shares: ~{shares_est} | Maliyet: ${position_size}")
+            print(f"  [{t}] [{asset}] Bakiye ONCE: ${balance}")
+            print(f"  [{t}] {'=' * 42}")
+
+        self._order_attempted_this_window.add(asset)
+
+        order_result = await self.executor.place_order(
+            token_id=token_id,
+            amount_usdc=position_size,
+            fair_price=token_price,
+        )
+
+        if order_result["success"]:
+            self._consecutive_order_rejects = 0
+            order_type = order_result.get("order_type_used", "GTC")
+
             if not cfg.DRY_RUN:
-                shares_est = (position_size / token_price).quantize(
-                    Decimal("0.01")
-                ) if token_price > 0 else Decimal("0")
-                t = _now_str()
-                print(f"\n  [{t}] {'=' * 42}")
-                print(f"  [{t}] {'GERCEK' if not cfg.DRY_RUN else 'DRY'} ISLEM #{self._production_trade_count + 1}")
-                print(f"  [{t}] Yon: {sig['direction']} | Confidence: {sig['confidence']}")
-                print(f"  [{t}] Delta: {'+' if sig['delta_percent'] > 0 else ''}{sig['delta_percent']:.4f}% | Oracle Lag: {sig['oracle_lag']}s")
-                print(f"  [{t}] Token fiyat: ${token_price} | Shares: ~{shares_est} | Maliyet: ${position_size}")
-                print(f"  [{t}] Bakiye ONCE: ${balance}")
-                print(f"  [{t}] {'=' * 42}")
-
-            # ── Çift emir koruması (emirden hemen önce, lock altında) ────
-            self._traded_this_window = window_ts
-
-            # ── Emir gönder (GTC — market maker'lar dolduracak) ─────────
-            order_result = await self.executor.place_order(
-                token_id=token_id,
-                amount_usdc=position_size,
-                fair_price=token_price,
-            )
-
-            if order_result["success"]:
-                self._consecutive_order_rejects = 0
-                order_type = order_result.get("order_type_used", "GTC")
-
-                # ── Fill Verification ─────────────────────────────────
-                # Cancel-first stratejisi: önce iptal et (fill olduysa no-op),
-                # sonra bakiye kontrol — race condition'ı önler.
-                if not cfg.DRY_RUN:
-                    await asyncio.sleep(10)
-                    await self.executor.cancel_all_orders()
-                    await asyncio.sleep(3)
-                    balance_after = await self.executor.get_balance()
-                    spent = balance - balance_after
-                    expected_cost = order_result["total_cost"]
-
-                    if spent < expected_cost * Decimal("0.3"):
-                        t = _now_str()
-                        print(
-                            f"\n  [{t}] DOLMADI [{order_type}] — "
-                            f"Bakiye: ${balance} → ${balance_after}"
-                            f"\n  [{t}] GTC iptal edildi. Bu pencerede tekrar "
-                            f"emir YOK.\n"
-                        )
-                        return
-
-                    # Doldu — gerçek fill verisini hesapla
-                    order_result["total_cost"] = spent
-                    actual_shares = order_result["shares"]
-                    if actual_shares > 0:
-                        actual_price = (spent / actual_shares).quantize(
-                            Decimal("0.001")
-                        )
-                    else:
-                        actual_price = order_result["price_paid"]
-                    order_result["price_paid"] = actual_price
-
-                    t = _now_str()
-                    print(
-                        f"  [{t}] DOLDU [{order_type}] — Fill: ${actual_price}/share, "
-                        f"maliyet: ${spent:.2f}, shares: {actual_shares}"
-                    )
-
-                if self._committed_trade_window == window_ts:
-                    return
-                self._committed_trade_window = window_ts
-                self._production_trade_count += 1
-
-                self.claimer.register_trade(window_ts, {
-                    "token_id": token_id,
-                    "direction": sig["direction"],
-                    "cost_usdc": order_result["total_cost"],
-                    "shares": order_result["shares"],
-                    "token_price": order_result["price_paid"],
-                })
-
-                log_trade({
-                    "window_ts": window_ts,
-                    "direction": sig["direction"],
-                    "exchange_price": str(exchange_data.get("average", "0")),
-                    "oracle_price": str(oracle_data.get("price", "0")),
-                    "window_open_price": str(window_open_price or "0"),
-                    "delta_percent": str(sig["delta_percent"]),
-                    "oracle_lag_seconds": sig["oracle_lag"],
-                    "confidence": sig["confidence"],
-                    "token_price_paid": str(order_result["price_paid"]),
-                    "shares": str(order_result["shares"]),
-                    "total_cost_usdc": str(order_result["total_cost"]),
-                    "order_id": order_result["order_id"],
-                    "dry_run": order_result["dry_run"],
-                    "production_trade_num": self._production_trade_count,
-                    "fill_verified": True,
-                })
-            else:
-                error_type = order_result.get("error_type", "post_send")
-                error_msg = order_result.get("error", "")
-
-                # pre_send dahil: bu pencerede bir kez denendi; sifirlama yapma (spam/onarimsiz dongu)
-                if error_type != "pre_send":
-                    self._consecutive_order_rejects += 1
-
-                # Fee hatası kontrolü (ilk işlemde)
-                if "fee" in error_msg.lower():
-                    print(
-                        f"\n  {_C.RED}{_C.BOLD}"
-                        f"  FEE HATASI: {error_msg}\n"
-                        f"  order_executor.py'daki fee_rate_bps degerini guncelle."
-                        f"{_C.RESET}\n"
-                    )
-                    log_error("Fee hatasi — bot durduruluyor", {"error": error_msg})
-                    self._stop_reason = f"Fee hatasi: {error_msg}"
-                    self._running = False
-                    return
-
-                log_error(
-                    f"Emir basarisiz ({error_type}): {error_msg}",
-                    {"token_id": token_id, "window_ts": window_ts},
+                filled, spent, balance_after = await self._check_fill(
+                    balance, order_result, order_type, attempt=1
                 )
 
-                # Acil durdurma: ardışık redler
-                if self._consecutive_order_rejects >= cfg.EMERGENCY_ORDER_REJECTS:
-                    self._stop_reason = (
-                        f"{self._consecutive_order_rejects} ardisik emir reddi"
+                if not filled:
+                    retry_size = max(
+                        position_size,
+                        Decimal("5") * cfg.MAX_TOKEN_PRICE,
                     )
-                    self._print_emergency_stop()
-                    self._running = False
+                    if retry_size > balance_after:
+                        retry_size = balance_after
+                    t = _now_str()
+                    print(
+                        f"  [{t}] [{asset}] Retry: ${retry_size} ile MAX fiyat "
+                        f"(${cfg.MAX_TOKEN_PRICE}) deneniyor..."
+                    )
+                    retry_result = await self.executor.place_order(
+                        token_id=token_id,
+                        amount_usdc=retry_size,
+                        fair_price=cfg.MAX_TOKEN_PRICE,
+                    )
+                    if retry_result["success"]:
+                        order_result = retry_result
+                        order_type = "GTC-RETRY"
+                        filled, spent, balance_after = await self._check_fill(
+                            balance, order_result, order_type, attempt=2
+                        )
+                    else:
+                        t = _now_str()
+                        print(
+                            f"  [{t}] [{asset}] Retry emir hatasi: "
+                            f"{retry_result.get('error', '?')}"
+                        )
+
+                    if not filled:
+                        t = _now_str()
+                        print(
+                            f"  [{t}] [{asset}] Retry de DOLMADI. Bu pencerede "
+                            f"emir YOK.\n"
+                        )
+                        return False
+
+                order_result["total_cost"] = spent
+                actual_shares = order_result["shares"]
+                if actual_shares > 0:
+                    actual_price = (spent / actual_shares).quantize(
+                        Decimal("0.001")
+                    )
+                else:
+                    actual_price = order_result["price_paid"]
+                order_result["price_paid"] = actual_price
+
+                t = _now_str()
+                print(
+                    f"  [{t}] [{asset}] DOLDU [{order_type}] — Fill: ${actual_price}/share, "
+                    f"maliyet: ${spent:.2f}, shares: {actual_shares}"
+                )
+
+            if self._committed_trade_window == window_ts:
+                return True
+            self._committed_trade_window = window_ts
+            self._traded_this_window = window_ts
+            self._production_trade_count += 1
+
+            self.claimer.register_trade(window_ts, {
+                "token_id": token_id,
+                "direction": sig["direction"],
+                "cost_usdc": order_result["total_cost"],
+                "shares": order_result["shares"],
+                "token_price": order_result["price_paid"],
+            })
+
+            trade_log = {
+                "window_ts": window_ts,
+                "asset": asset,
+                "direction": sig["direction"],
+                "exchange_price": str(exchange_data.get("average", "0")),
+                "oracle_price": str(oracle_data.get("price", "0")),
+                "window_open_price": str(window_open_price or "0"),
+                "delta_percent": str(sig["delta_percent"]),
+                "oracle_lag_seconds": sig["oracle_lag"],
+                "confidence": sig["confidence"],
+                "token_price_paid": str(order_result["price_paid"]),
+                "shares": str(order_result["shares"]),
+                "total_cost_usdc": str(order_result["total_cost"]),
+                "order_id": order_result["order_id"],
+                "dry_run": order_result["dry_run"],
+                "production_trade_num": self._production_trade_count,
+                "fill_verified": True,
+            }
+            if kelly_info:
+                trade_log["kelly_p"] = str(kelly_info["p"])
+                trade_log["kelly_f_star"] = str(kelly_info["f_star"])
+                trade_log["kelly_f_adj"] = str(kelly_info["f_adj"])
+            log_trade(trade_log)
+            return True
+        else:
+            error_type = order_result.get("error_type", "post_send")
+            error_msg = order_result.get("error", "")
+
+            if error_type != "pre_send":
+                self._consecutive_order_rejects += 1
+
+            if "fee" in error_msg.lower():
+                print(
+                    f"\n  {_C.RED}{_C.BOLD}"
+                    f"  FEE HATASI: {error_msg}\n"
+                    f"  order_executor.py'daki fee_rate_bps degerini guncelle."
+                    f"{_C.RESET}\n"
+                )
+                log_error("Fee hatasi — bot durduruluyor", {"error": error_msg})
+                self._stop_reason = f"Fee hatasi: {error_msg}"
+                self._running = False
+                return True
+
+            log_error(
+                f"[{asset}] Emir basarisiz ({error_type}): {error_msg}",
+                {"token_id": token_id, "window_ts": window_ts, "asset": asset},
+            )
+
+            if self._consecutive_order_rejects >= cfg.EMERGENCY_ORDER_REJECTS:
+                self._stop_reason = (
+                    f"{self._consecutive_order_rejects} ardisik emir reddi"
+                )
+                self._print_emergency_stop()
+                self._running = False
+                return True
+
+            return False
+
+    # ── Fill kontrolü (retry'da yeniden kullanılır) ─────────────────
+
+    async def _check_fill(
+        self, balance_before: Decimal, order_result: dict,
+        order_type: str, attempt: int = 1,
+    ) -> tuple:
+        """Emrin dolup dolmadığını kontrol et. (filled, spent, balance_after)"""
+        wait = 20 if attempt == 1 else 8
+        await asyncio.sleep(wait)
+        await self.executor.cancel_all_orders()
+        await asyncio.sleep(2)
+        balance_after = await self.executor.get_balance()
+        spent = balance_before - balance_after
+        expected_cost = order_result["total_cost"]
+
+        if spent < expected_cost * Decimal("0.3"):
+            t = _now_str()
+            print(
+                f"\n  [{t}] DOLMADI [{order_type}] — "
+                f"Bakiye: ${balance_before} → ${balance_after}"
+            )
+            return False, spent, balance_after
+        return True, spent, balance_after
 
     # ══════════════════════════════════════════════════════════════════
     #  PENCERE KAPANIŞI
