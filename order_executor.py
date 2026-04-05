@@ -232,8 +232,13 @@ class OrderExecutor:
                     None, self._clob.post_order, signed_order, OrderType.GTC
                 )
             except Exception as post_err:
-                result["error"] = f"Emir gonderme hatasi: {post_err}"
-                result["error_type"] = "post_send"
+                err_str = str(post_err)
+                if "403" in err_str or "geoblock" in err_str.lower() or "restricted in your region" in err_str.lower():
+                    result["error"] = f"GEOBLOCK: {post_err}"
+                    result["error_type"] = "geoblock"
+                else:
+                    result["error"] = f"Emir gonderme hatasi: {post_err}"
+                    result["error_type"] = "post_send"
                 return result
 
             if response:
@@ -249,15 +254,19 @@ class OrderExecutor:
 
         except Exception as e:
             error_msg = str(e)
-            result["error_type"] = "post_send"
             low = error_msg.lower()
-            if "insufficient" in low or "not enough balance" in low:
+            if "403" in error_msg or "geoblock" in low or "restricted in your region" in low:
+                result["error"] = f"GEOBLOCK: {error_msg}"
+                result["error_type"] = "geoblock"
+            elif "insufficient" in low or "not enough balance" in low:
                 result["error"] = f"Bakiye yetersiz: {error_msg}"
                 result["error_type"] = "pre_send"
             elif "rejected" in low or "fill" in low:
                 result["error"] = f"Emir reddedildi: {error_msg}"
+                result["error_type"] = "post_send"
             else:
                 result["error"] = f"API hatasi: {error_msg}"
+                result["error_type"] = "post_send"
 
         return result
 

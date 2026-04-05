@@ -24,9 +24,11 @@ Kullanım:
     rm.record_trade("WIN", Decimal("3.88"))
 """
 
+import json
 import time
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN
+from pathlib import Path
 from typing import Tuple
 
 from config import cfg
@@ -422,6 +424,63 @@ class RiskManager:
             "max_consecutive_wins": self._max_consecutive_wins,
             "start_time": self._start_time,
         }
+
+    # ── State Kalıcılığı ─────────────────────────────────────────────────
+
+    def save_state(self, path: str):
+        """Risk state'ini JSON dosyasına yaz (crash sonrası kurtarma için)."""
+        data = {
+            "consecutive_losses": self._consecutive_losses,
+            "consecutive_wins": self._consecutive_wins,
+            "cooldown_until_window": self._cooldown_until_window,
+            "daily_pnl": str(self._daily_pnl),
+            "wins": self._wins,
+            "losses": self._losses,
+            "total_trades": self._total_trades,
+            "current_date": self._current_date,
+            "saved_at": time.time(),
+        }
+        try:
+            p = Path(path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps(data, indent=2))
+        except Exception as e:
+            print(f"  [RiskManager] State kaydi basarisiz: {e}")
+
+    def load_state(self, path: str):
+        """Önceki oturumun risk state'ini yükle (yalnızca güncel tarihse)."""
+        try:
+            p = Path(path)
+            if not p.exists():
+                return
+            data = json.loads(p.read_text())
+            # Yalnızca aynı UTC günüyse art arda kayıp/cooldown devam etsin
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            if data.get("current_date") != today:
+                print(
+                    f"  [RiskManager] State eskimiş ({data.get('current_date')}) — "
+                    f"yeni gün, günlük sayaçlar sıfırlandı"
+                )
+                # Cooldown/consecutive bilgilerini koru (gün değişse de geçerli)
+                self._consecutive_losses = data.get("consecutive_losses", 0)
+                self._consecutive_wins = data.get("consecutive_wins", 0)
+                self._cooldown_until_window = data.get("cooldown_until_window", 0)
+                return
+            self._consecutive_losses = data.get("consecutive_losses", 0)
+            self._consecutive_wins = data.get("consecutive_wins", 0)
+            self._cooldown_until_window = data.get("cooldown_until_window", 0)
+            self._daily_pnl = Decimal(data.get("daily_pnl", "0"))
+            self._wins = data.get("wins", 0)
+            self._losses = data.get("losses", 0)
+            self._total_trades = data.get("total_trades", 0)
+            self._current_date = data.get("current_date", today)
+            print(
+                f"  [RiskManager] State yuklendi: {self._consecutive_losses} ardisik kayip, "
+                f"cooldown_until={self._cooldown_until_window}, "
+                f"daily_pnl={self._daily_pnl}"
+            )
+        except Exception as e:
+            print(f"  [RiskManager] State yuklenemedi: {e}")
 
     def get_dry_run_verdict(self) -> str:
         """

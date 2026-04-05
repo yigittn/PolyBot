@@ -112,6 +112,15 @@ class Config:
         self.CLOB_HOST: str = _get("CLOB_HOST", "https://clob.polymarket.com")
         self.CHAIN_ID: int = _get_int("CHAIN_ID", 137)
 
+        # --- Proxy (geoblock aşmak için, opsiyonel) ---
+        # Örnek: HTTPS_PROXY=socks5h://user:pass@proxy-host:1080
+        self.HTTPS_PROXY: str = _get("HTTPS_PROXY", "")
+        if self.HTTPS_PROXY:
+            import os
+            os.environ["HTTPS_PROXY"] = self.HTTPS_PROXY
+            os.environ["HTTP_PROXY"] = self.HTTPS_PROXY
+            print(f"  [Proxy] Aktif: {self.HTTPS_PROXY.split('@')[-1]}")
+
         # --- Polygon RPC (Oracle için) ---
         self.POLYGON_RPC_URL: str = _get("POLYGON_RPC_URL", "https://polygon-rpc.com")
         self.POLYGON_RPC_BACKUP: str = _get("POLYGON_RPC_BACKUP", "")

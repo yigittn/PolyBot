@@ -183,6 +183,7 @@ class ExchangeFeed:
         is_stale = (now - latest_update) > self.STALE_THRESHOLD if latest_update > 0 else True
 
         rolling = self._get_rolling_range(asset)
+        trend_pct = self._get_trend_pct(asset)
 
         return {
             "binance": bp, "coinbase": cp, "bitstamp": sp,
@@ -193,7 +194,25 @@ class ExchangeFeed:
             "rolling_high_15m": rolling["high"],
             "rolling_low_15m": rolling["low"],
             "rolling_range_pct": rolling["range_pct"],
+            "trend_pct": trend_pct,
         }
+
+    # ── Trend (15dk başından sonuna yönsel hareket) ──────────────────────
+
+    def _get_trend_pct(self, asset: str) -> "Optional[Decimal]":
+        """
+        Son 15 dakikadaki yönsel fiyat değişimi (%).
+        Pozitif → yukarı trend, Negatif → aşağı trend.
+        Veri yetersizse None.
+        """
+        history = self._price_history.get(asset)
+        if not history or len(history) < 5:
+            return None
+        oldest_price = history[0][1]
+        newest_price = history[-1][1]
+        if oldest_price <= 0:
+            return None
+        return (newest_price - oldest_price) / oldest_price * Decimal("100")
 
     # ── Rolling High/Low ────────────────────────────────────────────────
 

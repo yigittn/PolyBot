@@ -25,6 +25,8 @@ from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
 
+from pathlib import Path
+
 from config import cfg
 from exchange_feed import ExchangeFeed
 from oracle_monitor import OracleMonitor
@@ -52,6 +54,9 @@ class Bot:
         self.executor = OrderExecutor(cfg)
         self.claimer = AutoClaimer(cfg)
 
+        self._risk_state_path = str(
+            Path(cfg.PROJECT_ROOT) / "data" / "risk_state.json"
+        )
         self._traded_this_window: int = 0
         self._order_attempted_this_window: set[str] = set()
         self._try_trade_lock = asyncio.Lock()
@@ -134,6 +139,9 @@ class Bot:
         except Exception as e:
             print(f"\n  BASARISIZ: Modul baslatilamadi: {e}")
             return False
+
+        # Risk state yükle (crash sonrası art arda kayıp/cooldown kaybetme)
+        self.risk.load_state(self._risk_state_path)
 
         # 3. Bakiye kontrolü
         print(f"\n  [2/8] USDC bakiye kontrol...")
@@ -232,15 +240,22 @@ class Bot:
             return False
 
         # 1. Bakiye < EMERGENCY_BALANCE_MIN
-        try:
-            balance = await self.executor.get_balance()
-            if balance < cfg.EMERGENCY_BALANCE_MIN:
-                self._stop_reason = (
-                    f"Bakiye ${balance} < ${cfg.EMERGENCY_BALANCE_MIN} minimum"
-                )
-                return True
-        except Exception:
-            pass
+        # API geçici hata verirse $0 döner — yanlış durdurmaları önlemek için
+        # 3 kez dene, hepsi başarısızsa bu kontrolü atla (diğer korumalar çalışır)
+        balance_ok = False
+        for _attempt in range(3):
+            try:
+                balance = await self.executor.get_balance()
+                if balance is not None and balance > 0:
+                    balance_ok = True
+                    if balance < cfg.EMERGENCY_BALANCE_MIN:
+                        self._stop_reason = (
+                            f"Bakiye ${balance} < ${cfg.EMERGENCY_BALANCE_MIN} minimum"
+                        )
+                        return True
+                    break
+            except Exception:
+                await asyncio.sleep(2)
 
         # 2. Günlük kayıp > DAILY_LOSS_LIMIT
         stats = self.risk.get_stats()
@@ -441,7 +456,10 @@ class Bot:
 
     async def _print_balance_report(self):
         """Her 10 pencerede bakiye raporu yazdır."""
-        balance = await self.executor.get_balance()
+        try:
+            balance = await self.claimer._get_balance_with_retry(self.executor)
+        except Exception:
+            return  # API geçici hata — raporu atla, botu durdurma
         change = balance - self._initial_balance
         sign = "+" if change >= 0 else ""
 
@@ -716,6 +734,31 @@ class Bot:
             error_type = order_result.get("error_type", "post_send")
             error_msg = order_result.get("error", "")
 
+            # ── Geoblock: VPS bölgesi Polymarket tarafından engellendi ──
+            if error_type == "geoblock":
+                t = _now_str()
+                print(f"""
+  [{t}] \033[91m\033[1m{'=' * 44}\033[0m
+  [{t}] \033[91m\033[1m  POLYMARKET GEOBLOCK (403)\033[0m
+  [{t}] \033[91m\033[1m{'=' * 44}\033[0m
+  [{t}]  Sunucunun bulundugu bolge Polymarket tarafindan
+  [{t}]  engellenmis. Emirler gonderilemez.
+  [{t}]
+  [{t}]  Cozum secenekleri:
+  [{t}]   1. VPN / SOCKS5 proxy kur (onerilir):
+  [{t}]      apt install dante-server  veya  3proxy
+  [{t}]      .env'e HTTPS_PROXY=socks5://127.0.0.1:1080 ekle
+  [{t}]   2. Sunucuyu baska bir bolgeye (US/UK) tasi
+  [{t}]   3. Yerel makinenden calistir
+  [{t}]
+  [{t}]  Bot durduruluyor (geoblock — emir sayaci artmaz)
+  [{t}] \033[91m\033[1m{'=' * 44}\033[0m
+""")
+                log_error("GEOBLOCK: Bolge engeli — bot durduruluyor", {"error": error_msg})
+                self._stop_reason = "Geoblock (403) — VPN/proxy gerekli"
+                self._running = False
+                return True
+
             if error_type != "pre_send":
                 self._consecutive_order_rejects += 1
 
@@ -812,8 +855,10 @@ class Bot:
                 payout = claim.get("shares", Decimal("5"))
             profit = payout - cost_usdc
             self.risk.record_trade("WIN", profit)
+            self.risk.save_state(self._risk_state_path)
         elif result == "LOSS" and not is_reconciled:
             self.risk.record_trade("LOSS", -cost_usdc)
+            self.risk.save_state(self._risk_state_path)
             profit = -cost_usdc
             payout = Decimal("0")
         elif result == "LOSS" and is_reconciled:
@@ -846,6 +891,7 @@ class Bot:
                 {"window_ts": window_ts, "error": claim.get("error")},
             )
             self.risk.record_trade("LOSS", -cost_usdc)
+            self.risk.save_state(self._risk_state_path)
             profit = -cost_usdc
             payout = Decimal("0")
             result = "LOSS"

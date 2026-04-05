@@ -126,6 +126,15 @@ class SignalEngine:
             )
             return result
 
+        # ── Trend filtresi: 15dk yönsel hareket > %0.7 → trend piyasa ──
+        trend_pct = exchange_data.get("trend_pct")
+        if trend_pct is not None and abs(trend_pct) > Decimal("0.70"):
+            result["reason"] = (
+                f"SKIP: Trend piyasa - son 15dk hareket "
+                f"%{trend_pct:+.3f} (esik: ±%0.70)"
+            )
+            return result
+
         # ── Yön belirle ────────────────────────────────────────────────
         direction = "UP" if exchange_delta > 0 else "DOWN"
 

@@ -27,7 +27,7 @@ class AutoClaimer:
     """Kazanan pozisyonları tespit eder (hızlı + ertelenmiş)."""
 
     QUICK_POLL_INTERVAL = 30
-    QUICK_POLL_MAX = 120
+    QUICK_POLL_MAX = 180
 
     def __init__(self, config=None):
         self._cfg = config or cfg
@@ -141,7 +141,23 @@ class AutoClaimer:
 
         return results
 
-    # ── Production: Hızlı bakiye kontrolü (120s) ─────────────────────
+    # ── Yardımcı: bakiye sorgusunu 3 kez dene ────────────────────────
+
+    async def _get_balance_with_retry(self, executor, retries: int = 3) -> Decimal:
+        """Bakiye sorgusunu başarılı olana kadar en fazla `retries` kez dene."""
+        for attempt in range(retries):
+            try:
+                bal = await executor.get_balance()
+                if bal is not None and bal >= 0:
+                    return bal
+            except Exception as e:
+                if attempt < retries - 1:
+                    await asyncio.sleep(2)
+                else:
+                    raise e
+        raise RuntimeError("Bakiye sorgusu basarisiz (tum denemeler)")
+
+    # ── Production: Hızlı bakiye kontrolü (180s) ─────────────────────
 
     async def _quick_balance_check(
         self,
@@ -167,7 +183,21 @@ class AutoClaimer:
             "error": None,
         }
 
-        balance_before = await executor.get_balance()
+        try:
+            balance_before = await self._get_balance_with_retry(executor)
+        except Exception as e:
+            print(f"  [AutoClaimer] Baslangic bakiye sorgusu basarisiz ({e}) — PENDING")
+            self._pending_reconciliation.append({
+                "window_ts": window_ts,
+                "direction": direction,
+                "shares": shares,
+                "cost_usdc": cost_usdc,
+                "token_id": token_id,
+                "created_at": time.time(),
+            })
+            base_result["result"] = "PENDING"
+            return base_result
+
         threshold = shares * Decimal("0.5")
 
         print(
@@ -181,7 +211,11 @@ class AutoClaimer:
         while waited < self.QUICK_POLL_MAX:
             await asyncio.sleep(self.QUICK_POLL_INTERVAL)
             waited += self.QUICK_POLL_INTERVAL
-            balance_after = await executor.get_balance()
+            try:
+                balance_after = await self._get_balance_with_retry(executor)
+            except Exception:
+                print(f"  [AutoClaimer] Bakiye sorgusu basarisiz ({waited}s) — bekleniyor...")
+                continue
             delta = balance_after - balance_before
 
             if delta >= threshold:
@@ -231,13 +265,17 @@ class AutoClaimer:
         if not self._pending_reconciliation:
             return []
 
-        actual = await executor.get_balance()
+        try:
+            actual = await self._get_balance_with_retry(executor)
+        except Exception as e:
+            print(f"  [Reconcile] Bakiye sorgusu basarisiz ({e}) — bu pencere atlaniyor")
+            return []
         expected = initial_balance - self._total_costs + self._confirmed_payouts
         surplus = actual - expected
 
         results = []
         now = time.time()
-        pending_timeout_seconds = 20 * 300  # 20 pencere = 6000s = 100dk
+        pending_timeout_seconds = 120 * 300  # 120 pencere = 36000s = 10 saat
 
         still_pending = []
         for trade in self._pending_reconciliation:
