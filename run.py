@@ -630,6 +630,9 @@ class Bot:
         )
 
         if order_result["success"]:
+            # Emir API'ye ulaştı — hemen kilitle (fill bekleme öncesi double-order önler)
+            self._committed_trade_window = window_ts
+            self._traded_this_window = window_ts
             self._consecutive_order_rejects = 0
             order_type = order_result.get("order_type_used", "GTC")
 
@@ -692,10 +695,6 @@ class Bot:
                     f"maliyet: ${spent:.2f}, shares: {actual_shares}"
                 )
 
-            if self._committed_trade_window == window_ts:
-                return True
-            self._committed_trade_window = window_ts
-            self._traded_this_window = window_ts
             self._production_trade_count += 1
 
             self.claimer.register_trade(window_ts, {
