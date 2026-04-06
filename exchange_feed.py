@@ -32,14 +32,17 @@ import websockets
 from config import cfg
 
 # Per-asset WebSocket URLs and Coinbase/Bitstamp channel names
+# Binance.com is blocked from US IPs — bot auto-falls back to Binance.US
 _ASSET_WS = {
     "BTC": {
         "binance": "wss://stream.binance.com:9443/ws/btcusdt@ticker",
+        "binance_us": "wss://stream.binance.us:9443/ws/btcusdt@ticker",
         "coinbase_product": "BTC-USD",
         "bitstamp_channel": "live_trades_btcusd",
     },
     "ETH": {
         "binance": "wss://stream.binance.com:9443/ws/ethusdt@ticker",
+        "binance_us": "wss://stream.binance.us:9443/ws/ethusdt@ticker",
         "coinbase_product": "ETH-USD",
         "bitstamp_channel": "live_trades_ethusd",
     },
@@ -245,20 +248,29 @@ class ExchangeFeed:
 
         return {"high": high, "low": low, "range_pct": range_pct}
 
-    # ── Binance WebSocket (per-asset) ────────────────────────────────────
+    # ── Binance WebSocket (per-asset, .com → .us otomatik geçiş) ────────────
 
     async def _run_binance(self, asset: str, ws_url: str):
-        """Binance ticker stream'ine bağlan ve fiyat güncelle."""
+        """
+        Binance.com stream'ine bağlan. US sunucularında bağlanamıyorsa
+        Binance.US stream'ine otomatik geç (aynı format, farklı host).
+        """
+        ws_cfg = _ASSET_WS.get(asset, {})
+        urls_to_try = [ws_url, ws_cfg.get("binance_us", ws_url)]
+        active_url = urls_to_try[0]
         retry_idx = 0
+
         while self._running:
             try:
                 async with websockets.connect(
-                    ws_url,
+                    active_url,
                     ssl=self._ssl_ctx,
                     ping_interval=20,
                     ping_timeout=10,
                     close_timeout=5,
                 ) as ws:
+                    if active_url != ws_url:
+                        print(f"  [ExchangeFeed] {asset} Binance.US aktif ({active_url})")
                     retry_idx = 0
                     while self._running:
                         raw = await asyncio.wait_for(ws.recv(), timeout=30)
@@ -274,6 +286,15 @@ class ExchangeFeed:
             except Exception:
                 if not self._running:
                     return
+                # İlk URL başarısız oldu ve başka seçenek varsa geç
+                if active_url == urls_to_try[0] and len(urls_to_try) > 1:
+                    print(
+                        f"  [ExchangeFeed] {asset} Binance.com baglanti hatasi "
+                        f"— Binance.US deneniyor..."
+                    )
+                    active_url = urls_to_try[1]
+                    retry_idx = 0
+                    continue
                 delay = self.RETRY_DELAYS[min(retry_idx, len(self.RETRY_DELAYS) - 1)]
                 await asyncio.sleep(delay)
                 retry_idx += 1
