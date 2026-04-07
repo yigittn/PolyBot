@@ -142,10 +142,10 @@ class SignalEngine:
         chosen_ask = (
             up_best_ask if direction == "UP" else down_best_ask
         )
-        if chosen_ask is not None and chosen_ask > self._cfg.MAX_TOKEN_PRICE:
+        if chosen_ask is not None and chosen_ask >= self._cfg.MAX_TOKEN_PRICE:
             result["direction"] = "SKIP"
             result["reason"] = (
-                f"SKIP: {direction} token ${chosen_ask} > max "
+                f"SKIP: {direction} token ${chosen_ask} >= max "
                 f"${self._cfg.MAX_TOKEN_PRICE}"
             )
             return result
