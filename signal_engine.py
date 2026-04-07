@@ -156,11 +156,11 @@ class SignalEngine:
         )
 
         # ── SKIP: Confidence yeterli mi? ───────────────────────────────
-        if confidence < 50:
+        if confidence < 60:
             result["direction"] = "SKIP"
             result["confidence"] = confidence
             result["reason"] = (
-                f"SKIP: confidence {confidence} < 50 "
+                f"SKIP: confidence {confidence} < 60 "
                 f"(delta: {exchange_delta:.4f}%, lag: {oracle_lag}s)"
             )
             return result

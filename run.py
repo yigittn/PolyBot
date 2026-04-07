@@ -553,9 +553,9 @@ class Bot:
             token_price = market["down_best_ask"]
             book_size = market.get("down_liquidity", Decimal("999"))
 
-        if token_price is not None and token_price > cfg.MAX_TOKEN_PRICE:
+        if token_price is not None and token_price >= cfg.MAX_TOKEN_PRICE:
             log_skip(
-                f"[{asset}] Token fiyati ${token_price} > max ${cfg.MAX_TOKEN_PRICE} "
+                f"[{asset}] Token fiyati ${token_price} >= max ${cfg.MAX_TOKEN_PRICE} "
                 f"(run.py guvenlik)",
                 window_ts,
             )
