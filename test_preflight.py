@@ -115,23 +115,21 @@ async def test_binance():
     section("2. BİNANCE WEBSOCKET")
     ssl_ctx = ssl.create_default_context(cafile=certifi.where())
 
-    for label, url in [
-        ("Binance.com", "wss://stream.binance.com:9443/ws/btcusdt@ticker"),
-        ("Binance.US",  "wss://stream.binance.us:9443/ws/btcusdt@ticker"),
-    ]:
-        try:
-            async with websockets.connect(url, ssl=ssl_ctx, open_timeout=8) as ws:
-                raw = await asyncio.wait_for(ws.recv(), timeout=8)
-                data = json.loads(raw)
-                price = data.get("c", "?")
-                log(label, "PASS", f"BTC fiyatı: ${float(price):,.2f}")
-                return True  # ilki çalıştıysa yeterli
-        except asyncio.TimeoutError:
-            log(label, "FAIL", "Bağlantı veya veri zaman aşımı (8s)")
-        except Exception as e:
-            log(label, "FAIL", f"{type(e).__name__}: {str(e)[:80]}")
+    url = "wss://stream.binance.com:9443/ws/btcusdt@ticker"
+    label = "Binance.com"
+    try:
+        async with websockets.connect(url, ssl=ssl_ctx, open_timeout=8) as ws:
+            raw = await asyncio.wait_for(ws.recv(), timeout=8)
+            data = json.loads(raw)
+            price = data.get("c", "?")
+            log(label, "PASS", f"BTC fiyatı: ${float(price):,.2f}")
+            return True
+    except asyncio.TimeoutError:
+        log(label, "FAIL", "Bağlantı veya veri zaman aşımı (8s)")
+    except Exception as e:
+        log(label, "FAIL", f"{type(e).__name__}: {str(e)[:80]}")
 
-    log("Binance (özet)", "FAIL", "Ne Binance.com ne Binance.US bağlanabildi — Coinbase/Bitstamp backup devreye girer")
+    log("Binance (özet)", "FAIL", "stream.binance.com bağlanamadı — Coinbase/Bitstamp yedek devreye girer")
     return False
 
 

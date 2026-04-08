@@ -153,15 +153,15 @@ class Bot:
             return False
         print(f"        GECTI — ${self._initial_balance} USDC")
 
-        # 4. Binance WebSocket (tüm asset'ler) — US bölgelerinde .us'a geçiş yapılır
-        print("  [3/8] Binance WebSocket (binance.com → binance.us otomatik)...")
-        await asyncio.sleep(5)  # .us geçişi için biraz daha bekle
+        # 4. Binance WebSocket (tüm asset'ler — stream.binance.com)
+        print("  [3/8] Binance WebSocket (stream.binance.com)...")
+        await asyncio.sleep(5)
         for asset in cfg.TRADING_ASSETS:
             ex = self.exchange.get_price(asset)
             if ex.get("binance") is None:
                 print(
                     f"        UYARI — {asset} Binance verisi henuz yok "
-                    f"(binance.us'a gecis devam ediyor, Coinbase ile devam)"
+                    f"(baglanti kuruluyor, Coinbase ile devam)"
                 )
             else:
                 print(f"        GECTI — {asset} ${ex['binance']:.2f}")
