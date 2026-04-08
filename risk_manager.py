@@ -116,7 +116,7 @@ class RiskManager:
 
         # ── KURAL 4: Token fiyat filtresi ────────────────────────────────
         if token_price is not None:
-            if token_price > self._cfg.MAX_TOKEN_PRICE:
+            if token_price >= self._cfg.MAX_TOKEN_PRICE:
                 return (
                     False,
                     f"Token fiyati cok yuksek: ${token_price} > "
@@ -216,25 +216,22 @@ class RiskManager:
         """
         Token fiyatına göre gerçekçi kazanma olasılığı tahmini.
 
-        Tarihsel verilere dayalı kalibrasyon:
-          $0.25-0.40 → p=0.48 (ucuz ama belirsiz)
-          $0.40-0.55 → p=0.56 (en iyi bracket, 5/9 tarihsel)
-          $0.55+     → p=0.50 (edge yok)
+        Tarihsel verilere dayalı kalibrasyon (muhafazakar):
+          $0.25-0.35 → p=0.52 (ucuz ama belirsiz)
+          $0.35-0.44 → p=0.53 (en iyi bracket — ucuz token + conviction)
+          $0.44+     → p=0.51 (edge çok düşük)
 
-        Ardışık kazanç serisinde hafif bonus (momentum).
+        Not: Ardışık kazanç bonusu kaldırıldı (gambler's fallacy).
         """
         tp = float(token_price)
         if tp <= 0.35:
-            p = Decimal("0.54")
-        elif tp <= 0.50:
-            p = Decimal("0.56")
-        else:
             p = Decimal("0.52")
+        elif tp <= 0.44:
+            p = Decimal("0.53")
+        else:
+            p = Decimal("0.51")
 
-        if self._consecutive_wins >= 2:
-            p += Decimal("0.02")
-
-        return min(p, Decimal("0.70"))
+        return min(p, Decimal("0.65"))
 
     def calculate_kelly_size(
         self,

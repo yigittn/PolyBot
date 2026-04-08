@@ -171,6 +171,10 @@ class Config:
         self.DAILY_MOVE_FILTER_ENABLED: bool = _get_bool("DAILY_MOVE_FILTER_ENABLED", False)
         self.DAILY_MOVE_THRESHOLD_PCT: Decimal = _get_decimal("DAILY_MOVE_THRESHOLD_PCT", "3.0")
 
+        # --- Sinyal Kalitesi ---
+        self.MIN_CONFIDENCE: int = _get_int("MIN_CONFIDENCE", 70)
+        self.MIN_MARKET_SPREAD: Decimal = _get_decimal("MIN_MARKET_SPREAD", "0.06")
+
         # --- Telegram Bildirimleri (opsiyonel) ---
         self.TELEGRAM_ENABLED: bool = _get_bool("TELEGRAM_ENABLED", False)
         self.TELEGRAM_BOT_TOKEN: str = _get("TELEGRAM_BOT_TOKEN", "")

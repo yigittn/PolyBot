@@ -611,6 +611,24 @@ class Bot:
                 if traded:
                     return
 
+    async def _confirm_signal(
+        self, asset: str, window_ts: int, initial_direction: str, market: dict
+    ) -> bool:
+        """2 ek kontrol: sinyal yönü 4 saniye boyunca tutarlı mı?"""
+        for _ in range(2):
+            await asyncio.sleep(2)
+            exchange_data = self.exchange.get_price(asset)
+            oracle_data = self.oracle.get_oracle_data(asset)
+            wop = self.oracle.get_window_open_price(window_ts, asset)
+            sig = self.signal.generate_signal(
+                exchange_data, oracle_data, wop,
+                up_best_ask=market.get("up_best_ask"),
+                down_best_ask=market.get("down_best_ask"),
+            )
+            if sig["direction"] != initial_direction:
+                return False
+        return True
+
     async def _try_trade_for_asset(
         self, asset: str, window_ts: int, remaining: int
     ) -> bool:
@@ -643,6 +661,17 @@ class Bot:
 
         if sig["direction"] == "SKIP":
             log_skip(f"[{asset}] {sig['reason']}", window_ts)
+            return False
+
+        # ── Sinyal tutarlılık kontrolü (4s boyunca yön değişmemeli) ──
+        confirmed = await self._confirm_signal(
+            asset, window_ts, sig["direction"], market
+        )
+        if not confirmed:
+            log_skip(
+                f"[{asset}] Sinyal tutarsiz — 4s boyunca yon degisti",
+                window_ts,
+            )
             return False
 
         if sig["direction"] == "UP":

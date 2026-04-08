@@ -299,8 +299,8 @@ class MarketResolver:
         up_liq = market.get("up_liquidity", Decimal("0"))
         down_liq = market.get("down_liquidity", Decimal("0"))
 
-        up_ok = self._cfg.MIN_TOKEN_PRICE <= up_ask <= self._cfg.MAX_TOKEN_PRICE
-        down_ok = self._cfg.MIN_TOKEN_PRICE <= down_ask <= self._cfg.MAX_TOKEN_PRICE
+        up_ok = self._cfg.MIN_TOKEN_PRICE <= up_ask < self._cfg.MAX_TOKEN_PRICE
+        down_ok = self._cfg.MIN_TOKEN_PRICE <= down_ask < self._cfg.MAX_TOKEN_PRICE
 
         if not (up_ok or down_ok):
             import time

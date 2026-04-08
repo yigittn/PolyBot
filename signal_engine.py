@@ -117,6 +117,15 @@ class SignalEngine:
             )
             return result
 
+        # ── Oracle minimum onay gücü ──────────────────────────────────
+        abs_oracle = abs(oracle_delta)
+        if abs_oracle < Decimal("0.03"):
+            result["reason"] = (
+                f"SKIP: Oracle onay zayif — delta %{oracle_delta:.4f} "
+                f"< min %0.03"
+            )
+            return result
+
         # ── Volatilite filtresi: 15dk rolling range < %0.10 → yatay piyasa ─
         rolling_range = exchange_data.get("rolling_range_pct")
         if rolling_range is not None and rolling_range < Decimal("0.10"):
@@ -138,6 +147,21 @@ class SignalEngine:
         # ── Yön belirle ────────────────────────────────────────────────
         direction = "UP" if exchange_delta > 0 else "DOWN"
 
+        # ── Trend alignment: sinyal 15dk trende uyumlu mu? ────────────
+        if trend_pct is not None:
+            if direction == "UP" and trend_pct < Decimal("-0.05"):
+                result["reason"] = (
+                    f"SKIP: UP sinyal ama 15dk trend negatif "
+                    f"(%{trend_pct:+.3f})"
+                )
+                return result
+            if direction == "DOWN" and trend_pct > Decimal("0.05"):
+                result["reason"] = (
+                    f"SKIP: DOWN sinyal ama 15dk trend pozitif "
+                    f"(%{trend_pct:+.3f})"
+                )
+                return result
+
         # ── Seçilen tarafta token fiyatı üst sınırı (MAX_TOKEN_PRICE) ──
         chosen_ask = (
             up_best_ask if direction == "UP" else down_best_ask
@@ -150,17 +174,37 @@ class SignalEngine:
             )
             return result
 
+        # ── Market asimetri kapısı ─────────────────────────────────────
+        if up_best_ask is not None and down_best_ask is not None:
+            spread = abs(up_best_ask - down_best_ask)
+            if spread < self._cfg.MIN_MARKET_SPREAD:
+                result["reason"] = (
+                    f"SKIP: Piyasa kararsiz — UP=${up_best_ask} vs "
+                    f"DOWN=${down_best_ask} (spread ${spread:.2f} < "
+                    f"${self._cfg.MIN_MARKET_SPREAD})"
+                )
+                return result
+            # Sadece ucuz tarafı trade et (piyasa yönüyle uyumlu)
+            cheap_side = "DOWN" if down_best_ask < up_best_ask else "UP"
+            if direction != cheap_side:
+                result["reason"] = (
+                    f"SKIP: Sinyal {direction} ama ucuz taraf {cheap_side} "
+                    f"(UP=${up_best_ask}, DOWN=${down_best_ask})"
+                )
+                return result
+
         # ── Confidence skoru hesapla (0-100) ───────────────────────────
         confidence = self._calculate_confidence(
             abs_delta, oracle_lag, exchange_data, oracle_delta,
         )
 
         # ── SKIP: Confidence yeterli mi? ───────────────────────────────
-        if confidence < 60:
+        min_conf = self._cfg.MIN_CONFIDENCE
+        if confidence < min_conf:
             result["direction"] = "SKIP"
             result["confidence"] = confidence
             result["reason"] = (
-                f"SKIP: confidence {confidence} < 60 "
+                f"SKIP: confidence {confidence} < {min_conf} "
                 f"(delta: {exchange_delta:.4f}%, lag: {oracle_lag}s)"
             )
             return result
@@ -224,13 +268,13 @@ class SignalEngine:
 
         # ── Oracle onay gücü (max 25 puan) ─────────────────────────────
         abs_oracle = abs(oracle_delta)
-        if abs_oracle >= Decimal("0.08"):
+        if abs_oracle >= Decimal("0.10"):
             confidence += 25
+        elif abs_oracle >= Decimal("0.07"):
+            confidence += 20
         elif abs_oracle >= Decimal("0.05"):
-            confidence += 18
+            confidence += 15
         elif abs_oracle >= Decimal("0.03"):
-            confidence += 10
-        elif abs_oracle >= Decimal("0.02"):
-            confidence += 5
+            confidence += 8
 
         return confidence
