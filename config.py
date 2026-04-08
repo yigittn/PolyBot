@@ -164,9 +164,28 @@ class Config:
             a.strip().upper() for a in _assets_raw.split(",") if a.strip()
         ]
 
+        # --- Trading Filtreleri ---
+        self.TRADING_HOURS_ENABLED: bool = _get_bool("TRADING_HOURS_ENABLED", False)
+        self.TRADING_HOUR_START: int = _get_int("TRADING_HOUR_START", 6)   # ET saat
+        self.TRADING_HOUR_END: int = _get_int("TRADING_HOUR_END", 23)      # ET saat
+        self.DAILY_MOVE_FILTER_ENABLED: bool = _get_bool("DAILY_MOVE_FILTER_ENABLED", False)
+        self.DAILY_MOVE_THRESHOLD_PCT: Decimal = _get_decimal("DAILY_MOVE_THRESHOLD_PCT", "3.0")
+
+        # --- Telegram Bildirimleri (opsiyonel) ---
+        self.TELEGRAM_ENABLED: bool = _get_bool("TELEGRAM_ENABLED", False)
+        self.TELEGRAM_BOT_TOKEN: str = _get("TELEGRAM_BOT_TOKEN", "")
+        self.TELEGRAM_CHAT_ID: str = _get("TELEGRAM_CHAT_ID", "")
+        # all | results | critical — ayrıntı: run.py _telegram_should_notify
+        self.TELEGRAM_NOTIFY_MODE: str = _get(
+            "TELEGRAM_NOTIFY_MODE", "all"
+        ).strip().lower()
+
+        # --- Dry Run ---
+        self.DRY_RUN: bool = _get_bool("DRY_RUN", True)
+        self.DRY_RUN_BALANCE: Decimal = _get_decimal("DRY_RUN_BALANCE", "1000")
+
         # --- Log & Dosya ---
         self.LOG_FILE: str = _get("LOG_FILE", "data/trades.jsonl")
-        self.DRY_RUN: bool = _get_bool("DRY_RUN", True)
 
         # --- Proje Kök Dizini ---
         self.PROJECT_ROOT: Path = Path(__file__).resolve().parent

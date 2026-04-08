@@ -224,12 +224,12 @@ class RiskManager:
         Ardışık kazanç serisinde hafif bonus (momentum).
         """
         tp = float(token_price)
-        if tp <= 0.40:
-            p = Decimal("0.48")
-        elif tp <= 0.55:
+        if tp <= 0.35:
+            p = Decimal("0.54")
+        elif tp <= 0.50:
             p = Decimal("0.56")
         else:
-            p = Decimal("0.50")
+            p = Decimal("0.52")
 
         if self._consecutive_wins >= 2:
             p += Decimal("0.02")

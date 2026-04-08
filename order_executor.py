@@ -61,7 +61,7 @@ class OrderExecutor:
     async def get_balance(self) -> Decimal:
         """Cüzdandaki USDC bakiyesini sorgula."""
         if self._cfg.DRY_RUN:
-            return Decimal("1000")
+            return self._cfg.DRY_RUN_BALANCE
         if self._clob is None:
             return Decimal("0")
 

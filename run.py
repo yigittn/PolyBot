@@ -24,6 +24,7 @@ import time
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from pathlib import Path
 
@@ -35,6 +36,7 @@ from signal_engine import SignalEngine
 from risk_manager import RiskManager
 from order_executor import OrderExecutor
 from auto_claimer import AutoClaimer
+from telegram_notifier import TelegramNotifier
 from logger_module import (
     log_trade, log_result, log_skip, log_cooldown,
     log_error, print_summary, print_dry_run_report,
@@ -53,6 +55,10 @@ class Bot:
         self.risk = RiskManager(cfg)
         self.executor = OrderExecutor(cfg)
         self.claimer = AutoClaimer(cfg)
+        self.tg = TelegramNotifier(
+            token=cfg.TELEGRAM_BOT_TOKEN if cfg.TELEGRAM_ENABLED else "",
+            chat_id=cfg.TELEGRAM_CHAT_ID if cfg.TELEGRAM_ENABLED else "",
+        )
 
         self._risk_state_path = str(
             Path(cfg.PROJECT_ROOT) / "data" / "risk_state.json"
@@ -71,6 +77,27 @@ class Bot:
         self._settled_window_closes: set[int] = set()
         self._committed_trade_window: int = 0
         # Aynı pencere için çift sonuç logunu önle (sınırda tekrar tetiklenme vb.)
+
+        # Günlük BTC hareket filtresi için: UTC gece yarısındaki BTC fiyatı
+        self._daily_open_price: Decimal = Decimal("0")
+        self._daily_open_date: str = ""
+
+    def _telegram_should_notify(self, kind: str) -> bool:
+        """
+        TELEGRAM_NOTIFY_MODE (.env):
+          all      — başlangıç, emir, sonuç, drawdown, ardışık kayıp, kapanış, acil
+          results  — WIN/LOSS sonucu + acil durdurma + kapanış
+          critical — sadece emir girişi + acil durdurma + kapanış
+        """
+        if not cfg.TELEGRAM_ENABLED:
+            return False
+        mode = getattr(cfg, "TELEGRAM_NOTIFY_MODE", "all").strip().lower()
+        if mode == "critical":
+            return kind in ("trade_entry", "emergency", "shutdown")
+        if mode == "results":
+            return kind in ("result", "emergency", "shutdown")
+        # all
+        return True
 
     # ══════════════════════════════════════════════════════════════════
     #  BAŞLATMA
@@ -232,6 +259,8 @@ class Bot:
   +================================================+
 """
         print(banner)
+        if self._telegram_should_notify("startup"):
+            await self.tg.notify_startup(self._initial_balance)
         return True
 
     # ══════════════════════════════════════════════════════════════════
@@ -324,8 +353,8 @@ class Bot:
 
         return False
 
-    def _print_emergency_stop(self):
-        """Acil durdurma mesajını yazdır."""
+    async def _print_emergency_stop(self):
+        """Acil durdurma mesajını yazdır ve Telegram bildir."""
         stats = self.risk.get_stats()
         balance = "?"
 
@@ -350,6 +379,66 @@ class Bot:
             "wins": stats["wins"],
             "losses": stats["losses"],
         })
+        if self._telegram_should_notify("emergency"):
+            await self.tg.notify_emergency_stop(self._stop_reason)
+
+    # ══════════════════════════════════════════════════════════════════
+    #  TİCARET FİLTRELERİ
+    # ══════════════════════════════════════════════════════════════════
+
+    def _is_trading_hours(self) -> tuple[bool, str]:
+        """
+        ET (America/New_York) saat aralığı filtresi.
+        TRADING_HOUR_START–TRADING_HOUR_END dışındaysa False döner.
+        """
+        if not cfg.TRADING_HOURS_ENABLED:
+            return True, ""
+        et = datetime.now(ZoneInfo("America/New_York"))
+        hour = et.hour
+        start = cfg.TRADING_HOUR_START
+        end = cfg.TRADING_HOUR_END
+        if start <= hour < end:
+            return True, ""
+        return False, (
+            f"Saat filtresi: ET {et.strftime('%H:%M')} — "
+            f"islem saati {start:02d}:00-{end:02d}:00 ET"
+        )
+
+    def _check_daily_move(self) -> tuple[bool, str]:
+        """
+        Günlük BTC hareket filtresi.
+        Gece yarısından bu yana BTC DAILY_MOVE_THRESHOLD_PCT üstü hareket ettiyse
+        False döner — trend piyasada oracle-lag avantajı kalmaz.
+        """
+        if not cfg.DAILY_MOVE_FILTER_ENABLED:
+            return True, ""
+
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        ex = self.exchange.get_price("BTC")
+        current = ex.get("average")
+        if current is None:
+            return True, ""  # Veri yok, atla
+
+        # Gün değiştiyse sıfırla
+        if self._daily_open_date != today:
+            self._daily_open_price = current
+            self._daily_open_date = today
+            return True, ""
+
+        if self._daily_open_price <= 0:
+            self._daily_open_price = current
+            return True, ""
+
+        move_pct = abs(
+            (current - self._daily_open_price) / self._daily_open_price * Decimal("100")
+        )
+        if move_pct >= cfg.DAILY_MOVE_THRESHOLD_PCT:
+            return False, (
+                f"Gunluk BTC hareketi %{move_pct:.2f} >= "
+                f"%{cfg.DAILY_MOVE_THRESHOLD_PCT} esik — "
+                f"trend piyasa, islem yok"
+            )
+        return True, ""
 
     # ══════════════════════════════════════════════════════════════════
     #  ANA DÖNGÜ
@@ -376,7 +465,7 @@ class Bot:
                 # Acil durdurma kontrolü (her 10 pencerede + her trade sonrası)
                 if self._window_count > 0 and self._window_count % 5 == 0:
                     if await self._check_emergency_stop():
-                        self._print_emergency_stop()
+                        await self._print_emergency_stop()
                         self._running = False
                         return
 
@@ -442,6 +531,18 @@ class Bot:
 
                 # ── İşlem penceresi: T-30s → T-10s ──────────────────────
                 if window["is_entry_window"] and self._traded_this_window != window_ts:
+                    # Saat filtresi
+                    hours_ok, hours_reason = self._is_trading_hours()
+                    if not hours_ok:
+                        print(f"  [{remaining:>3d}s] SKIP: {hours_reason}", end="\r", flush=True)
+                        await asyncio.sleep(2)
+                        continue
+                    # Günlük BTC hareket filtresi
+                    move_ok, move_reason = self._check_daily_move()
+                    if not move_ok:
+                        log_skip(move_reason, window_ts)
+                        await asyncio.sleep(2)
+                        continue
                     await self._try_trade(window_ts, remaining)
                     await asyncio.sleep(2)
                     continue
@@ -483,7 +584,7 @@ class Bot:
             self._stop_reason = (
                 f"Bakiye ${balance} < ${cfg.EMERGENCY_BALANCE_MIN} minimum"
             )
-            self._print_emergency_stop()
+            await self._print_emergency_stop()
             self._running = False
 
     # ══════════════════════════════════════════════════════════════════
@@ -735,6 +836,20 @@ class Bot:
                 trade_log["kelly_f_star"] = str(kelly_info["f_star"])
                 trade_log["kelly_f_adj"] = str(kelly_info["f_adj"])
             log_trade(trade_log)
+            if (
+                not cfg.DRY_RUN
+                and self._telegram_should_notify("trade_entry")
+            ):
+                await self.tg.notify_trade_entry(
+                    asset=asset,
+                    direction=sig["direction"],
+                    token_price=order_result["price_paid"],
+                    position_usdc=order_result["total_cost"],
+                    confidence=sig["confidence"],
+                    delta_pct=sig["delta_percent"],
+                    oracle_lag=sig["oracle_lag"],
+                    trade_num=self._production_trade_count,
+                )
             return True
         else:
             error_type = order_result.get("error_type", "post_send")
@@ -789,7 +904,7 @@ class Bot:
                 self._stop_reason = (
                     f"{self._consecutive_order_rejects} ardisik emir reddi"
                 )
-                self._print_emergency_stop()
+                await self._print_emergency_stop()
                 self._running = False
                 return True
 
@@ -945,8 +1060,39 @@ class Bot:
         })
 
         if not cfg.DRY_RUN:
+            # Telegram: işlem sonucu (pozisyon / pencere sonucu)
+            if self._telegram_should_notify("result"):
+                await self.tg.notify_result(
+                    result=result,
+                    asset=claim.get("asset", "BTC"),
+                    direction=claim.get("direction", "?"),
+                    cost_usdc=cost_usdc,
+                    profit=profit,
+                    daily_pnl=stats["daily_pnl"],
+                    wins=stats["wins"],
+                    losses=stats["losses"],
+                    trade_num=self._production_trade_count,
+                    reconciled=is_reconciled,
+                )
+            # Telegram: drawdown uyarısı (%70 limite ulaşıldıysa)
+            if (
+                self._telegram_should_notify("drawdown")
+                and stats["daily_pnl"] < -(cfg.DAILY_LOSS_LIMIT * Decimal("0.70"))
+            ):
+                await self.tg.notify_drawdown_warning(
+                    stats["daily_pnl"], cfg.DAILY_LOSS_LIMIT
+                )
+            # Telegram: ardışık kayıp cooldown uyarısı
+            if (
+                self._telegram_should_notify("consecutive")
+                and result == "LOSS"
+                and stats["consecutive_losses"] >= cfg.COOLDOWN_LOSSES
+            ):
+                await self.tg.notify_consecutive_losses(
+                    stats["consecutive_losses"], cfg.COOLDOWN_WINDOWS
+                )
             if await self._check_emergency_stop():
-                self._print_emergency_stop()
+                await self._print_emergency_stop()
                 self._running = False
 
     # ══════════════════════════════════════════════════════════════════
@@ -984,7 +1130,16 @@ class Bot:
                 f"  Final bakiye:     ${final_balance}\n"
                 f"  Net degisim:      ${change}\n"
             )
+            change_str = f"${change:+.2f}" if isinstance(change, Decimal) else "?"
+            if self._telegram_should_notify("shutdown"):
+                await self.tg.notify_shutdown(
+                    daily_pnl=stats["daily_pnl"],
+                    wins=stats["wins"],
+                    losses=stats["losses"],
+                    net_change=change_str,
+                )
 
+        await self.tg.close()
         print("  Bot durduruldu.")
 
 

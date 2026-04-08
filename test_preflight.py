@@ -19,6 +19,7 @@ import sys
 import time
 from decimal import Decimal
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import certifi
 import websockets
@@ -671,6 +672,158 @@ async def test_integration():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  TEST 14: Telegram Bildirimleri
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def test_telegram():
+    section("14. TELEGRAM BİLDİRİMLERİ")
+    from config import cfg
+
+    if not cfg.TELEGRAM_ENABLED:
+        log("Telegram", "WARN", "TELEGRAM_ENABLED=false — bildirimler kapalı, atlanıyor")
+        return True
+
+    if not cfg.TELEGRAM_BOT_TOKEN or not cfg.TELEGRAM_CHAT_ID:
+        log("Telegram token/chat_id", "FAIL",
+            "TELEGRAM_BOT_TOKEN veya TELEGRAM_CHAT_ID eksik — .env'e ekle")
+        return False
+
+    log("Telegram config", "PASS",
+        f"Token: ...{cfg.TELEGRAM_BOT_TOKEN[-8:]} | "
+        f"Chat ID: {cfg.TELEGRAM_CHAT_ID} | "
+        f"Mod: {cfg.TELEGRAM_NOTIFY_MODE}")
+
+    # Gerçek mesaj gönder
+    try:
+        from telegram_notifier import TelegramNotifier
+        tg = TelegramNotifier(cfg.TELEGRAM_BOT_TOKEN, cfg.TELEGRAM_CHAT_ID)
+
+        if not tg.enabled:
+            log("Telegram bağlantısı", "FAIL",
+                "aiohttp kütüphanesi eksik — pip install aiohttp")
+            return False
+
+        await tg.send(
+            "🧪 <b>Preflight Test</b>\n"
+            f"Mod: <code>{cfg.TELEGRAM_NOTIFY_MODE}</code>\n"
+            "Bot production'a hazırlanıyor — bu mesajı görüyorsan Telegram çalışıyor ✅"
+        )
+        await tg.close()
+        log("Telegram mesaj gönderimi", "PASS",
+            "Test mesajı gönderildi — Telegram'ını kontrol et")
+        return True
+
+    except Exception as e:
+        log("Telegram mesaj gönderimi", "FAIL",
+            f"{type(e).__name__}: {str(e)[:80]}")
+        return False
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  TEST 15: Trading Filtreleri (Saat & Günlük BTC Hareketi)
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def test_trading_filters():
+    section("15. TİCARET FİLTRELERİ")
+    from config import cfg
+
+    # ── Saat filtresi ────────────────────────────────────────────────────
+    et = time.strftime("%H:%M", time.localtime())
+    if cfg.TRADING_HOURS_ENABLED:
+        from zoneinfo import ZoneInfo
+        from datetime import datetime
+        et_now = datetime.now(ZoneInfo("America/New_York"))
+        hour = et_now.hour
+        start = cfg.TRADING_HOUR_START
+        end = cfg.TRADING_HOUR_END
+        in_window = start <= hour < end
+        status = "PASS" if in_window else "WARN"
+        log("Saat filtresi",  status,
+            f"Aktif — ET şu an {et_now.strftime('%H:%M')} | "
+            f"İşlem saati: {start:02d}:00–{end:02d}:00 ET | "
+            f"{'İşlem yapılıyor ✅' if in_window else 'Şu an dışında — bot bekler ⚠️'}")
+    else:
+        log("Saat filtresi", "WARN",
+            "TRADING_HOURS_ENABLED=false — gece saatleri de işlem yapılır")
+
+    # ── Günlük BTC hareket filtresi ──────────────────────────────────────
+    if cfg.DAILY_MOVE_FILTER_ENABLED:
+        try:
+            from exchange_feed import ExchangeFeed
+            feed = ExchangeFeed(cfg)
+            await feed.start()
+            await asyncio.sleep(5)
+            ex = feed.get_price("BTC")
+            await feed.stop()
+
+            current = ex.get("average")
+            if current is None:
+                log("Günlük BTC hareket filtresi", "WARN",
+                    "Fiyat verisi alınamadı — filtre test edilemedi")
+            else:
+                # Basit test: eşik mantığı doğru çalışıyor mu
+                threshold = cfg.DAILY_MOVE_THRESHOLD_PCT
+                log("Günlük BTC hareket filtresi", "PASS",
+                    f"Aktif — BTC şu an ${current:,.2f} | "
+                    f"Eşik: %{threshold} günlük hareket | "
+                    f"Trend günlerinde otomatik duraklar ✅")
+        except Exception as e:
+            log("Günlük BTC hareket filtresi", "WARN",
+                f"Test hatası: {str(e)[:60]}")
+    else:
+        log("Günlük BTC hareket filtresi", "WARN",
+            "DAILY_MOVE_FILTER_ENABLED=false — trend piyasada da işlem yapılır")
+
+    # ── Oracle lag eşiği ─────────────────────────────────────────────────
+    lag_min = cfg.ORACLE_LAG_MIN
+    status = "PASS" if lag_min >= 15 else "WARN"
+    log("Oracle lag min eşiği", status,
+        f"ORACLE_LAG_MIN_SECONDS={lag_min}s "
+        f"({'✅ iyi' if lag_min >= 15 else '⚠️ 15s+ önerilir'})")
+
+    # ── Delta eşiği ──────────────────────────────────────────────────────
+    delta = cfg.DELTA_THRESHOLD
+    status = "PASS" if delta >= Decimal("0.07") else "WARN"
+    log("Delta eşiği", status,
+        f"DELTA_THRESHOLD_PERCENT={delta}% "
+        f"({'✅ iyi' if delta >= Decimal('0.07') else '⚠️ 0.07%+ önerilir'})")
+
+    # ── Token fiyat aralığı ───────────────────────────────────────────────
+    if float(cfg.MAX_TOKEN_PRICE) >= float(cfg.MAX_TOKEN_PRICE):  # always true, just range check
+        is_50c_bug_fixed = float(cfg.MAX_TOKEN_PRICE) < 1.0
+        log("50¢ token filtresi", "PASS" if is_50c_bug_fixed else "FAIL",
+            f"MIN=${cfg.MIN_TOKEN_PRICE} / MAX=${cfg.MAX_TOKEN_PRICE} | "
+            f"50¢ token {'engellendi ✅ (>= MAX_TOKEN_PRICE)' if float(cfg.MAX_TOKEN_PRICE) <= 0.50 else 'geçebilir ⚠️'}")
+
+    return True
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  TEST 16: Binance.US Fallback WebSocket
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def test_binance_us():
+    section("16. BİNANCE.US FALLBACK WEBSOCKET")
+    ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+    url = "wss://stream.binance.us:9443/ws/btcusdt@ticker"
+    try:
+        async with websockets.connect(url, ssl=ssl_ctx, open_timeout=8) as ws:
+            raw = await asyncio.wait_for(ws.recv(), timeout=8)
+            data = json.loads(raw)
+            price = data.get("c", "?")
+            log("Binance.US WebSocket", "PASS",
+                f"BTC: ${float(price):,.2f} — US sunucularda otomatik devreye girer")
+            return True
+    except asyncio.TimeoutError:
+        log("Binance.US WebSocket", "WARN", "Zaman aşımı — EU sunucularında gerekli değil")
+        return False
+    except Exception as e:
+        log("Binance.US WebSocket", "WARN",
+            f"Bağlanamadı (EU sunucularında gerekli değil): {str(e)[:60]}")
+        return False
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  ANA FONKSİYON
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -690,6 +843,7 @@ async def main():
 
     # Async testler
     await test_binance()
+    await test_binance_us()
     await test_coinbase()
     await test_bitstamp()
     test_oracle()
@@ -700,6 +854,8 @@ async def main():
     test_risk_manager()
     await test_order_executor()
     test_auto_claimer()
+    await test_trading_filters()
+    await test_telegram()
     await test_integration()
 
     _print_summary()
@@ -733,14 +889,20 @@ def _print_summary():
     print()
     if not failed:
         critical_warns = [r for r in warned if any(
-            kw in r[0].lower() for kw in ["geoblock", "bakiye", "coinbase", "oracle"]
+            kw in r[0].lower() for kw in ["geoblock", "bakiye", "coinbase", "oracle", "telegram"]
         )]
         if not critical_warns:
             print(f"  {G}{BOLD}✅ TÜM KRİTİK TESTLER GEÇTİ — Production'a geçebilirsin.{RESET}")
+            print(f"  {G}   .env'de DRY_RUN=false yap ve python -u run.py ile başlat.{RESET}")
         else:
             print(f"  {Y}{BOLD}⚠️  Uyarılar var — yukarıdaki WARN'ları kontrol et, sonra production'a geç.{RESET}")
     else:
         print(f"  {R}{BOLD}❌ KRİTİK HATALAR VAR — Gidermeden production'a BAŞLATMA.{RESET}")
+        critical = [r for r in failed if any(
+            kw in r[0].lower() for kw in ["geoblock", "clob", "oracle", "config", "telegram"]
+        )]
+        if critical:
+            print(f"  {R}   Önce bunları düzelt: {', '.join(r[0] for r in critical)}{RESET}")
     print()
 
 

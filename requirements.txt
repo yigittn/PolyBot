@@ -9,3 +9,4 @@ python-dotenv>=1.0.0          # .env dosyasını okumak için
 requests>=2.31.0              # Sync HTTP istekleri
 web3>=6.0.0                   # Polygon üzerinden Chainlink oracle
 aiohttp>=3.9.0                # Async HTTP istekleri
+certifi>=2023.7.22           # Telegram HTTPS CA bundle (telegram_notifier)
