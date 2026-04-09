@@ -45,6 +45,7 @@ from logger_module import (
 
 # Sürüm: mantık değişince burayı güncelle (terminal banner)
 BOT_VERSION = "v2.1 - NEW LOGIC ACTIVE"
+print("🔥🔥🔥 NEW CODE LOADED 🔥🔥🔥")
 
 
 class Bot:
