@@ -43,6 +43,9 @@ from logger_module import (
     _now_str, _C,
 )
 
+# Sürüm: mantık değişince burayı güncelle (terminal banner)
+BOT_VERSION = "v2.1 - NEW LOGIC ACTIVE"
+
 
 class Bot:
     """Tüm modülleri orkestra eden ana bot sınıfı."""
@@ -1220,6 +1223,8 @@ def main():
         sys.stderr.reconfigure(line_buffering=True)
     except (AttributeError, OSError, ValueError):
         pass
+
+    print(f"🚀 BOT VERSION: {BOT_VERSION}")
 
     if "--dry-run" in sys.argv:
         cfg.DRY_RUN = True
