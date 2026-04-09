@@ -42,9 +42,8 @@ from logger_module import (
     log_error, print_summary, print_dry_run_report,
     _now_str, _C,
 )
+from version import BOT_VERSION
 
-# Sürüm: mantık değişince burayı güncelle (terminal banner)
-BOT_VERSION = "v31 - NEW LOGIC ACTIVE"
 print("🔥🔥🔥 NEW CODE LOADED 🔥🔥🔥")
 
 

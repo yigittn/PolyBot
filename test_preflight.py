@@ -24,6 +24,8 @@ from zoneinfo import ZoneInfo
 import certifi
 import websockets
 
+from version import BOT_VERSION
+
 # ── Renk kodları ──────────────────────────────────────────────────────────────
 G = "\033[92m"   # yeşil
 Y = "\033[93m"   # sarı
@@ -896,6 +898,7 @@ def _print_summary():
             print(f"  {G}   .env'de DRY_RUN=false yap ve python -u run.py ile başlat.{RESET}")
         else:
             print(f"  {Y}{BOLD}⚠️  Uyarılar var — yukarıdaki WARN'ları kontrol et, sonra production'a geç.{RESET}")
+        print(f"\n  {B}{BOLD}🚀 BOT VERSION:{RESET} {BOLD}{BOT_VERSION}{RESET}")
     else:
         print(f"  {R}{BOLD}❌ KRİTİK HATALAR VAR — Gidermeden production'a BAŞLATMA.{RESET}")
         critical = [r for r in failed if any(
